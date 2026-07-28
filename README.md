@@ -60,3 +60,7 @@ chat → intake.py (slot filling)  →  research.py (query planning + DDG)
   improve grounding a lot — that's the natural next step.
 - No live pricing. Prices come from whatever the sources say, which may be stale; they're
   labelled as estimates and the booking links go to live search pages.
+  
+  
+## Demo Link
+https://drive.google.com/file/d/1-wRHi7i41KFkIvU6zaM5LFrTBJQEBwI4/view?usp=drive_link

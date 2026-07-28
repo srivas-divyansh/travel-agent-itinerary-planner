@@ -14,6 +14,9 @@ def _cite(source_ids: list[str] | None, registry: SourceRegistry) -> str:
             out.append(f"[{src.domain}]({src.url})")
     return " " + " ".join(out) if out else ""
 
+def _esc(text):
+    """Streamlit renders $...$ as LaTeX. Escape currency so amounts survive."""
+    return text.replace("$", "\\$") if isinstance(text, str) else text
 
 def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegistry,
                           flag_unsourced: bool = True) -> str:
@@ -135,7 +138,7 @@ def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegi
             if src:
                 A(f"- [{sid}] [{src.title}]({src.url})")
 
-    return "\n".join(L)
+    return _esc("\n".join(L))
 
 
 def _used_source_ids(node, acc: set | None = None) -> set:
