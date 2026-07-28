@@ -27,6 +27,10 @@ Rules:
   rather than guessing a city.
 - If all required slots are filled, set `ready` to true and make `reply` a short confirmation that
   you are about to research the trip. Do not ask more questions when ready is true.
+- The destination must be a real place a traveller can physically reach by commercial
+  transport. If it is fictional, extraterrestrial, or otherwise unreachable, leave
+  `destination` null, set ready=false, and say plainly in `reply` that you can only plan
+  trips to real destinations.
 
 Return ONLY this JSON object:
 {{

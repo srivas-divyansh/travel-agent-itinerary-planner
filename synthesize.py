@@ -197,8 +197,8 @@ def build_itinerary(trip: TripState, registry: SourceRegistry, model=None,
             model, pacer, 1400, progress,
         )
         day["day"] = n
-        day.setdefault("theme", o.get("theme", ""))
-        day.setdefault("area", o.get("area", ""))
+        day["theme"] = day.get("theme") or o.get("theme") or f"Day {n}"
+        day["area"] = day.get("area") or o.get("area") or ""
         days.append(day)
 
     itinerary = {k: v for k, v in skeleton.items() if k != "outline"}

@@ -98,7 +98,10 @@ if st.session_state.markdown:
             mime="text/markdown",
         )
 
-
+# before run_research_and_plan()
+if st.session_state.get("researched_for") not in (None, trip.destination):
+    st.session_state.registry = None          # destination moved — sources are void
+st.session_state.researched_for = trip.destination
 # ------------------------------------------------------------- pipeline ------
 def run_research_and_plan() -> None:
     status = st.status("Researching your trip…", expanded=True)
@@ -139,6 +142,21 @@ if prompt := st.chat_input(placeholder):
         st.markdown(prompt)
 
     if st.session_state.phase == "plan":
+        # Re-run extraction first: "actually, make it Vancouver" is a new trip,
+        # not a revision. Refinement never updates TripState, so without this
+        # the sidebar and sources stay pinned to the old destination.
+        probe = intake.intake_turn(trip, st.session_state.messages[:-1], prompt)
+        HARD = {"destination", "origin", "duration_days"}
+        if HARD & set(probe["changed"]):
+            with st.chat_message("assistant"):
+                st.markdown(f"Switching to **{trip.destination}** — starting fresh research.")
+            st.session_state.messages.append(
+                {"role": "assistant", "content": f"Switching to {trip.destination}."})
+            st.session_state.update(registry=None, itinerary=None,
+                                    markdown=None, coverage=None)
+            run_research_and_plan()
+            st.rerun()
+
         with st.chat_message("assistant"):
             status = st.status("Reworking the plan…", expanded=True)
 
@@ -162,6 +180,7 @@ if prompt := st.chat_input(placeholder):
     else:
         with st.chat_message("assistant"), st.spinner("Thinking…"):
             result = intake.intake_turn(trip, st.session_state.messages[:-1], prompt)
+            st.caption(f"DEBUG dest={trip.destination!r} changed={result['changed']}")
             st.markdown(result["reply"])
             if result["assumptions"]:
                 st.caption("Assuming: " + "; ".join(result["assumptions"]))
