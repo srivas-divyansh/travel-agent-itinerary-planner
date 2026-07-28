@@ -6,7 +6,7 @@ from search import SourceRegistry
 from state import TripState
 
 
-def _cite(source_ids: list[str], registry: SourceRegistry) -> str:
+def _cite(source_ids: list[str] | None, registry: SourceRegistry) -> str:
     out = []
     for sid in source_ids or []:
         src = registry.get(sid)
@@ -15,7 +15,8 @@ def _cite(source_ids: list[str], registry: SourceRegistry) -> str:
     return " " + " ".join(out) if out else ""
 
 
-def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegistry) -> str:
+def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegistry,
+                          flag_unsourced: bool = True) -> str:
     L: list[str] = []
     A = L.append
 
@@ -37,19 +38,23 @@ def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegi
         for b in day.get("blocks", []):
             place = b.get("place") or b.get("activity", "")
             map_url = links.map_link_for(place, trip.destination) if place else None
-            title = f"**{b.get('time', '')} — {b.get('activity', '')}**"
-            A(title)
-            meta = []
-            if b.get("duration"):
-                meta.append(b["duration"])
-            if b.get("cost"):
-                meta.append(b["cost"])
+            A(f"**{b.get('time', '')} — {b.get('activity', '')}**")
+
+            meta = [x for x in (b.get("duration"), b.get("cost")) if x]
             if map_url:
                 meta.append(f"[map]({map_url})")
             if meta:
                 A(f"  \n<sub>{' · '.join(meta)}</sub>")
+
             if b.get("why"):
-                A(f"  \n{b['why']}{_cite(b.get('sources'), registry)}")
+                mark = _cite(b.get("sources"), registry)
+                # A priced claim with no citation is the fabrication risk — surface it
+                # rather than letting it read with the same authority as sourced facts.
+                if flag_unsourced and not mark:
+                    cost = (b.get("cost") or "").strip().lower().replace("—", "-")
+                    if cost and cost not in ("free", "n/a", "-", "", "varies"):
+                        mark = " ⚠️ *unsourced*"
+                A(f"  \n{b['why']}{mark}")
             A("")
 
         food = day.get("food") or []
@@ -74,7 +79,9 @@ def itinerary_to_markdown(itinerary: dict, trip: TripState, registry: SourceRegi
             if s.get("examples"):
                 A(f"  \n<sub>Named in sources: {s['examples']}</sub>")
             if area:
-                A(f"  \n<sub>[Search stays here]({links.booking_search(f'{area}, {trip.destination}', trip.start_date, None)})</sub>")
+                _out = links._checkout_date(trip.start_date, trip.duration_days)
+                A(f"  \n<sub>[Search stays here]"
+                    f"({links.booking_search(f'{area}, {trip.destination}', trip.start_date, _out)})</sub>")
             A("")
 
     # --- transport ---

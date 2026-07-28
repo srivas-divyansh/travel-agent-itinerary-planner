@@ -57,7 +57,7 @@ def _fallback_queries(trip: TripState) -> list[str]:
     return [q for q in queries if q.strip()]
 
 
-def plan_queries(trip: TripState) -> list[str]:
+def plan_queries(trip: TripState, model=None) -> list[str]:
     """Ask the model for queries; fall back to the template set on any failure."""
     try:
         data = llm.json_chat(
@@ -65,27 +65,31 @@ def plan_queries(trip: TripState) -> list[str]:
                 {"role": "system", "content": QUERY_SYSTEM},
                 {"role": "user", "content": f"Trip brief:\n{trip.brief()}\n\nToday is {date.today().isoformat()}."},
             ],
-            temperature=0.2,
-            max_tokens=800,
+            model=model or config.FAST_MODEL,
+            temperature=config.TEMP_QUERIES,
+            max_tokens=config.MAX_TOKENS_QUERIES,
         )
         queries = [q.strip() for q in data.get("queries", []) if isinstance(q, str) and q.strip()]
     except Exception as exc:  # noqa: BLE001
         print(f"[research] query planning failed, using fallback: {exc}")
         queries = []
 
-    if len(queries) < 6:
-        seen = set(queries)
-        for q in _fallback_queries(trip):
-            if q not in seen:
-                queries.append(q)
-                seen.add(q)
+    # Top up from templates and dedupe case-insensitively. The old version only
+    # topped up below 6 and compared case-sensitively, so near-duplicates survived.
+    seen = {q.lower() for q in queries}
+    for q in _fallback_queries(trip):
+        if len(queries) >= config.MAX_QUERIES:
+            break
+        if q.lower() not in seen:
+            queries.append(q)
+            seen.add(q.lower())
 
-    return queries[:14]
+    return queries[:config.MAX_QUERIES]
 
 
-def gather(trip: TripState, progress=None) -> tuple[search_mod.SourceRegistry, list[str]]:
+def gather(trip: TripState, model=None, progress=None) -> tuple[search_mod.SourceRegistry, list[str]]:
     """Full research pass. Returns (registry, queries_used)."""
-    queries = plan_queries(trip)
+    queries = plan_queries(trip, model=model)
     registry = search_mod.SourceRegistry()
     search_mod.run_queries(queries, registry, progress=progress)
     return registry, queries

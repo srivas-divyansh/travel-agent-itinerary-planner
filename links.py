@@ -5,11 +5,78 @@ cannot hallucinate and cannot 404 the way a remembered deep link does.
 """
 from __future__ import annotations
 
+import llm          # for IATA fallback lookups
 from datetime import date, timedelta
 from urllib.parse import quote_plus
 
 from state import TripState
 
+# --- IATA resolution ---------------------------------------------------------
+# Metro codes (TYO, LON, NYC) are deliberate — they search all airports in a city.
+
+IATA = {
+    # India
+    "bengaluru": "BLR", "bangalore": "BLR", "delhi": "DEL", "new delhi": "DEL",
+    "mumbai": "BOM", "chennai": "MAA", "hyderabad": "HYD", "kolkata": "CCU",
+    "goa": "GOI", "kochi": "COK", "cochin": "COK", "pune": "PNQ",
+    "ahmedabad": "AMD", "jaipur": "JAI", "udaipur": "UDR", "jodhpur": "JDH",
+    "varanasi": "VNS", "amritsar": "ATQ", "dehradun": "DED", "leh": "IXL",
+    "srinagar": "SXR", "guwahati": "GAU", "thiruvananthapuram": "TRV",
+    # Asia
+    "tokyo": "TYO", "osaka": "OSA", "kyoto": "OSA", "seoul": "SEL",
+    "bangkok": "BKK", "singapore": "SIN", "kuala lumpur": "KUL",
+    "hong kong": "HKG", "taipei": "TPE", "beijing": "BEJ", "shanghai": "SHA",
+    "bali": "DPS", "denpasar": "DPS", "jakarta": "JKT", "manila": "MNL",
+    "hanoi": "HAN", "ho chi minh city": "SGN", "kathmandu": "KTM",
+    "colombo": "CMB", "male": "MLE", "phnom penh": "PNH",
+    # Middle East
+    "dubai": "DXB", "abu dhabi": "AUH", "doha": "DOH", "riyadh": "RUH",
+    "istanbul": "IST", "tel aviv": "TLV",
+    # Europe
+    "london": "LON", "paris": "PAR", "rome": "ROM", "milan": "MIL",
+    "barcelona": "BCN", "madrid": "MAD", "lisbon": "LIS", "amsterdam": "AMS",
+    "berlin": "BER", "munich": "MUC", "frankfurt": "FRA", "zurich": "ZRH",
+    "vienna": "VIE", "prague": "PRG", "budapest": "BUD", "athens": "ATH",
+    "dublin": "DUB", "copenhagen": "CPH", "stockholm": "STO", "oslo": "OSL",
+    "helsinki": "HEL", "reykjavik": "REK",
+    # Americas / Oceania / Africa
+    "new york": "NYC", "los angeles": "LAX", "san francisco": "SFO",
+    "chicago": "CHI", "washington": "WAS", "miami": "MIA", "boston": "BOS",
+    "toronto": "YTO", "vancouver": "YVR", "mexico city": "MEX",
+    "sao paulo": "SAO", "buenos aires": "BUE", "lima": "LIM", "bogota": "BOG",
+    "sydney": "SYD", "melbourne": "MEL", "auckland": "AKL",
+    "cairo": "CAI", "nairobi": "NBO", "cape town": "CPT", "johannesburg": "JNB",
+}
+
+
+def city_only(place: str | None) -> str:
+    """'Bengaluru, India' -> 'bengaluru'."""
+    return (place or "").split(",")[0].strip().lower()
+
+
+def iata_code(place: str | None) -> str | None:
+    """Dict first, LLM fallback for anything unlisted. None if unresolved."""
+    city = city_only(place)
+    if not city:
+        return None
+    if city in IATA:
+        return IATA[city]
+    try:
+        data = llm.json_chat(
+            [{"role": "system", "content":
+              'Return the 3-letter IATA code for the main airport or metro area of the '
+              'given city. Prefer the metropolitan code if one exists. '
+              'Return {"code": "XXX"} or {"code": null} if there is no airport.'},
+             {"role": "user", "content": place}],
+            max_tokens=100,
+        )
+        code = (data.get("code") or "").strip().upper()
+        if len(code) == 3 and code.isalpha():
+            IATA[city] = code          # cache for the process lifetime
+            return code
+    except Exception as exc:           # noqa: BLE001
+        print(f"[iata] lookup failed for {place!r}: {str(exc)[:60]}")
+    return None
 
 def maps_search(query: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={quote_plus(query)}"
@@ -22,17 +89,35 @@ def maps_directions(origin: str, destination: str, mode: str = "transit") -> str
         f"&travelmode={mode}"
     )
 
-
-def google_flights(origin: str, destination: str, start: str | None) -> str:
-    q = f"flights from {origin} to {destination}"
+def google_flights(origin: str, destination: str, start: str | None = None) -> str:
+    """Google parses this phrasing reliably. City names only — the country confuses it."""
+    o, d = city_only(origin).title(), city_only(destination).title()
+    q = f"Flights to {d} from {o}"
     if start:
         q += f" on {start}"
     return f"https://www.google.com/travel/flights?q={quote_plus(q)}"
 
 
-def skyscanner(origin: str, destination: str) -> str:
-    return f"https://www.skyscanner.net/transport/flights/?query={quote_plus(f'{origin} to {destination}')}"
+def skyscanner(origin: str, destination: str, start: str | None = None) -> str | None:
+    """Needs IATA codes in the path — there is no text-query URL. None if unresolved."""
+    o, d = iata_code(origin), iata_code(destination)
+    if not (o and d):
+        return None
+    url = f"https://www.skyscanner.net/transport/flights/{o.lower()}/{d.lower()}/"
+    if start:
+        try:
+            url += date.fromisoformat(start).strftime("%y%m%d") + "/"
+        except (ValueError, TypeError):
+            pass
+    return url
 
+
+def kayak(origin: str, destination: str, start: str | None = None) -> str | None:
+    o, d = iata_code(origin), iata_code(destination)
+    if not (o and d):
+        return None
+    url = f"https://www.kayak.com/flights/{o}-{d}"
+    return f"{url}/{start}" if start else url
 
 def booking_search(destination: str, checkin: str | None, checkout: str | None, adults: int = 2) -> str:
     url = f"https://www.booking.com/searchresults.html?ss={quote_plus(destination)}&group_adults={adults}"
@@ -85,18 +170,21 @@ def booking_bundle(trip: TripState) -> list[dict[str, str]]:
     checkout = _checkout_date(trip.start_date, trip.duration_days)
     adults = _adult_count(trip.travelers)
 
-    bundle = [
-        {"label": "Compare flights (Google Flights)", "url": google_flights(origin, dest, trip.start_date)},
-        {"label": "Compare flights (Skyscanner)", "url": skyscanner(origin, dest)},
-        {"label": "Hotels & stays (Booking.com)", "url": booking_search(dest, trip.start_date, checkout, adults)},
-        {"label": "Apartments (Airbnb)", "url": airbnb(dest)},
-        {"label": "Getting there / around (Rome2Rio)", "url": rome2rio(origin, dest)},
-        {"label": "Destination guide (Wikivoyage)", "url": wikivoyage(dest)},
-        {"label": "Check visa requirements", "url": visa_check(origin, dest)},
+    candidates = [
+        ("Compare flights (Google Flights)", google_flights(origin, dest, trip.start_date)),
+        ("Compare flights (Skyscanner)",     skyscanner(origin, dest, trip.start_date)),
+        ("Compare flights (Kayak)",          kayak(origin, dest, trip.start_date)),
+        ("Hotels & stays (Booking.com)",     booking_search(dest, trip.start_date, checkout, adults)),
+        ("Apartments (Airbnb)",              airbnb(dest)),
+        ("Getting there (Rome2Rio)",         rome2rio(origin, dest)),
+        ("Destination guide (Wikivoyage)",   wikivoyage(dest)),
+        ("Check visa requirements",          visa_check(origin, dest)),
     ]
     if trip.accommodation and "hostel" in trip.accommodation.lower():
-        bundle.insert(4, {"label": "Hostels (Hostelworld)", "url": hostelworld(dest)})
-    return bundle
+        candidates.insert(5, ("Hostels (Hostelworld)", hostelworld(dest)))
+
+    # Drop anything that couldn't be resolved rather than emitting a broken link.
+    return [{"label": l, "url": u} for l, u in candidates if u]
 
 
 def map_link_for(place: str, city: str | None) -> str:

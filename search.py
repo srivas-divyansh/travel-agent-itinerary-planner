@@ -40,18 +40,20 @@ def _domain(url: str) -> str:
 
 
 def _score(url: str, title: str) -> float:
-    d = _domain(url).lower()
-    t = (title or "").lower()
+    """Rank sources. Domain decides trust; title only ever penalises."""
+    d, t = _domain(url).lower(), (title or "").lower()
     score = 1.0
-    for hint in config.PREFERRED_DOMAIN_HINTS:
-        if hint in d or hint in t:
-            score += 1.0
-            break
-    for hint in config.DEMOTED_DOMAIN_HINTS:
-        if hint in d:
-            score -= 1.5
-            break
-    if any(w in t for w in ("top 10", "top 20", "best 15", "you won't believe")):
+    # Domain only — matching the title let "Is Tokyo Safe to VISIT" and
+    # "Attractions & MUSEUMs" score as if they were official sources.
+    if any(h in t for h in config.TITLE_STRONG_HINTS):
+        score += 1.0
+    if any(h in d for h in config.PREFERRED_DOMAIN_HINTS):
+        score += 1.0
+    if d.endswith((".gov", ".gov.in", ".go.jp", ".gov.uk")) or ".gov." in d:
+        score += 0.5
+    if any(h in d for h in config.DEMOTED_DOMAIN_HINTS):
+        score -= 1.5
+    if any(w in t for w in ("top 10", "top 20", "best 10", "must-see", "you won't believe")):
         score -= 0.4
     return score
 
@@ -125,16 +127,21 @@ def search(query: str, max_results: int | None = None) -> list[dict]:
 
 
 def run_queries(queries: list[str], registry: SourceRegistry, progress=None) -> SourceRegistry:
-    """Execute queries sequentially, feeding everything into the registry."""
+    """Execute queries sequentially, feeding results into the registry.
+
+    progress(i, total, query, added) — `added` is how many were NEW after dedupe,
+    so a run of zeros means DDG is throttling you.
+    """
     for i, q in enumerate(queries, 1):
+        results = search(q)
+        added = sum(1 for r in results
+                    if registry.add(
+                        title=r.get("title", ""),
+                        url=r.get("href") or r.get("url", ""),
+                        snippet=r.get("body") or r.get("description", ""),
+                        query=q,
+                    ))
         if progress:
-            progress(i, len(queries), q)
-        for r in search(q):
-            registry.add(
-                title=r.get("title", ""),
-                url=r.get("href") or r.get("url", ""),
-                snippet=r.get("body") or r.get("description", ""),
-                query=q,
-            )
+            progress(i, len(queries), q, added)
         time.sleep(config.SEARCH_DELAY_SECONDS)
     return registry

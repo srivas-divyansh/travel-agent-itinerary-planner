@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()          # must run before config is imported and reads os.getenv
+
 import streamlit as st
 
+import config
 import intake
-import links
 import render
 import research
 import synthesize
@@ -56,8 +60,17 @@ with st.sidebar:
         c = st.session_state.coverage
         st.divider()
         st.subheader("Sourcing")
-        st.metric("Claims with a source", f"{c['pct']}%")
-        st.caption(f"{c['sources_used']} of {c['sources_retrieved']} retrieved sources used")
+        st.metric("Priced claims with a source", f"{c['pct']}%",
+                    help="Citation density, not correctness — a cited claim may still "
+                        "misread its source.")
+        st.caption(f"{c['grounded']}/{c['factual_claims']} factual · "
+                    f"{c['soft_suggestions']} soft suggestions")
+        st.caption(f"Sources used: {c['sources_used']}/{c['sources_shown']} "
+                    f"({c['source_utilisation']})")
+        if c["unsupported"]:
+            with st.expander(f"⚠️ {len(c['unsupported'])} unsourced claims"):
+                for u in c["unsupported"]:
+                    st.caption(u)
 
     if st.session_state.queries:
         with st.expander("Searches run"):
@@ -90,18 +103,25 @@ if st.session_state.markdown:
 def run_research_and_plan() -> None:
     status = st.status("Researching your trip…", expanded=True)
 
-    def progress(i, total, q):
-        status.write(f"Search {i}/{total}: {q}")
+    def on_search(i, total, q, added):
+        status.write(f"Search {i}/{total} · +{added} · {q}")
 
-    registry, queries = research.gather(trip, progress=progress)
+    registry, queries = research.gather(trip, progress=on_search)
     st.session_state.registry = registry
     st.session_state.queries = queries
-    status.write(f"Collected {len(registry)} sources. Writing the itinerary…")
+    status.write(f"**{len(registry)} sources collected.** Building the itinerary…")
 
-    itinerary = synthesize.build_itinerary(trip, registry)
+    def on_build(kind, message):
+        icon = {"skeleton": "🗺️", "day": "📍", "wait": "⏳"}.get(kind, "•")
+        status.write(f"{icon} {message}")
+
+    status.update(label="Writing your itinerary — this takes a few minutes on the free tier")
+    itinerary = synthesize.build_itinerary(trip, registry, progress=on_build)
+
     st.session_state.itinerary = itinerary
     st.session_state.markdown = render.itinerary_to_markdown(itinerary, trip, registry)
-    st.session_state.coverage = synthesize.coverage_report(itinerary, registry)
+    st.session_state.coverage = synthesize.coverage_report(
+        itinerary, registry, sources_shown=config.SYNTH_SOURCES)
     st.session_state.phase = "plan"
     status.update(label="Plan ready", state="complete", expanded=False)
 
@@ -119,17 +139,24 @@ if prompt := st.chat_input(placeholder):
         st.markdown(prompt)
 
     if st.session_state.phase == "plan":
-        with st.chat_message("assistant"), st.spinner("Reworking the plan…"):
+        with st.chat_message("assistant"):
+            status = st.status("Reworking the plan…", expanded=True)
+
+            def on_refine(kind, message):
+                icon = {"search": "🔍", "day": "📍", "section": "✏️", "wait": "⏳"}.get(kind, "•")
+                status.write(f"{icon} {message}")
+
             st.session_state.itinerary = synthesize.refine_itinerary(
-                st.session_state.itinerary, trip, st.session_state.registry, prompt
+                st.session_state.itinerary, trip, st.session_state.registry,
+                prompt, progress=on_refine,
             )
             st.session_state.markdown = render.itinerary_to_markdown(
                 st.session_state.itinerary, trip, st.session_state.registry
             )
             st.session_state.coverage = synthesize.coverage_report(
-                st.session_state.itinerary, st.session_state.registry
-            )
-            st.markdown("Updated — see the revised plan below.")
+                st.session_state.itinerary, st.session_state.registry,
+                sources_shown=config.SYNTH_SOURCES)
+            status.update(label="Plan updated", state="complete", expanded=False)
         st.rerun()
 
     else:
